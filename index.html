@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Speed"><meta name="theme-color" content="#f7c600">
+<link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon-180.png">
+<title>Speed</title>
+<style>
+:root{--bg:#f7c600;--ink:#1a1a1a;--soft:rgba(26,26,26,.6);--panel:rgba(26,26,26,.09)}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--ink);font-family:-apple-system,"SF Pro Display","Helvetica Neue",Arial,sans-serif;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
+body{display:flex;flex-direction:column;gap:14px;overflow-y:auto;padding:calc(env(safe-area-inset-top,0px) + 16px) 20px calc(env(safe-area-inset-bottom,0px) + 16px)}
+button{border:0;border-radius:14px;background:var(--ink);color:var(--bg);font-family:inherit;font-size:1.15rem;font-weight:700;padding:16px;width:100%}
+button:active{opacity:.8}
+button:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+.mini{width:auto;padding:8px 12px;font-size:.9rem;background:var(--panel);color:var(--ink);border-radius:10px}
+.st{color:var(--soft);font-size:.95rem;min-height:1.4em}
+.row{display:flex;justify-content:space-between;gap:10px;font-size:.9rem;color:var(--soft);font-variant-numeric:tabular-nums}
+.row b{display:block;font-size:1.45rem;color:var(--ink);font-weight:700}
+
+html.hud,html.hud body{background:#000}
+body.hud{padding:0}
+.top{display:flex;justify-content:space-between;align-items:center}
+.main{flex:1;display:flex;flex-direction:column;justify-content:center;text-align:center}
+#speed{font-size:min(30vw,36vh);font-weight:800;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1}
+.unit{font-size:1.6rem;font-weight:600;margin-top:.4rem}
+body.hud .chrome{display:none}
+body.hud .main{transform:scaleX(-1);color:#fff}
+body.hud #speed{font-size:min(36vw,48vh)}
+
+</style></head><body>
+
+<div class="top chrome"><div class="st" id="st">Tap Start to track your speed.</div><button class="mini" id="hudbtn">HUD</button></div>
+<div class="main"><div id="speed">0.00</div><div class="unit">km/h</div></div>
+<div class="chrome">
+  <div class="row" style="margin-bottom:14px"><div><b id="max">0.00</b>Top speed</div><div><b id="dist">0.00</b>Distance km</div><div><b id="acc">–</b>GPS ± m</div></div>
+  <button id="toggle">Start</button>
+  <button class="mini" id="reset" style="margin-top:10px;width:100%">Reset top speed and distance</button>
+</div>
+<script>
+(() => {
+const $ = id => document.getElementById(id), fmt = v => v.toFixed(2), rad = d => d * Math.PI / 180, p2 = n => String(n).padStart(2, '0');
+let wake = null, want = false;
+async function acquire() { if (!want || wake) return; try { wake = await navigator.wakeLock.request('screen'); wake.onrelease = () => { wake = null; }; } catch (e) {} }
+function keepAwake(on) { want = on; if (on) acquire(); else if (wake) { wake.release().catch(() => {}); wake = null; } }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') acquire(); });
+const hav = (a, b) => { const R = 6371000, dl = rad(b.la - a.la), dn = rad(b.lo - a.lo), h = Math.sin(dl/2)**2 + Math.cos(rad(a.la))*Math.cos(rad(b.la))*Math.sin(dn/2)**2; return 2*R*Math.asin(Math.sqrt(h)); };
+const GPSERR = { 1: 'Location is blocked. Allow it in Settings > Privacy > Location Services > Safari Websites.', 2: 'No GPS signal. Move to an open area.', 3: 'GPS is taking too long. Keep waiting.' };
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+
+const st = m => $('st').textContent = m, CUT = .3, SM = .35;
+let watchId = null, shown = 0, max = 0, dist = 0, last = null, lastD = null;
+function onPos(p) {
+  const c = p.coords, t = p.timestamp, cur = { la: c.latitude, lo: c.longitude };
+  let ms = c.speed;
+  if (ms == null || isNaN(ms)) { ms = 0; if (last && t > last.t) ms = hav(last, cur) / ((t - last.t) / 1000); }
+  last = { ...cur, t };
+  if (c.accuracy < 30) { if (!lastD) lastD = cur; else { const d = hav(lastD, cur); if (d > 3) { dist += d / 1000; lastD = cur; } } }
+  let k = Math.max(0, ms * 3.6); if (k < CUT) k = 0;
+  shown += (k - shown) * SM; if (k === 0 && shown < CUT) shown = 0;
+  if (shown > max && c.accuracy < 30) max = shown;
+  $('speed').textContent = fmt(shown); $('max').textContent = fmt(max); $('dist').textContent = fmt(dist);
+  $('acc').textContent = Math.round(c.accuracy); st('Tracking');
+}
+function start() {
+  if (!navigator.geolocation) { st('This device has no location support.'); return; }
+  last = lastD = null; st('Looking for GPS signal…');
+  watchId = navigator.geolocation.watchPosition(onPos, e => st(GPSERR[e.code] || 'Location error.'), { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+  keepAwake(true); $('toggle').textContent = 'Stop';
+}
+function stop() { navigator.geolocation.clearWatch(watchId); watchId = null; keepAwake(false); shown = 0; $('speed').textContent = fmt(0); $('toggle').textContent = 'Start'; st('Stopped. Tap Start to track again.'); }
+$('toggle').onclick = () => watchId === null ? start() : stop();
+$('reset').onclick = () => { max = 0; dist = 0; $('max').textContent = $('dist').textContent = fmt(0); };
+const root = document.documentElement;
+$('hudbtn').onclick = e => { e.stopPropagation(); if (watchId === null) start(); root.classList.add('hud'); document.body.classList.add('hud'); };
+document.addEventListener('click', () => { root.classList.remove('hud'); document.body.classList.remove('hud'); });
+
+})();
+</script></body></html>
